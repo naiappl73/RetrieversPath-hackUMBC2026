@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": [],
+  "sections": [
+    {"offset": {"line": 3, "column": 0}, "map": {"version":3,"sources":[],"names":[],"mappings":"","debugId":null}},
+    {"offset": {"line": 55, "column": 0}, "map": {"version":3,"sources":["file:///Users/retro/Documents/UMBCHack/HACKMAP-hackUMBC/retrievers-path/app/icon--route-entry.js"],"sourcesContent":["import { NextResponse } from 'next/server'\n\nconst contentType = \"image/svg+xml\"\nconst cacheControl = \"no-cache, no-store\"\nconst buffer = Buffer.from(\"PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iMzIiIGZpbGw9IiNGREI1MTUiLz48dGV4dCB4PSIzMiIgeT0iNDEiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCwgc2Fucy1zZXJpZiIgZm9udC13ZWlnaHQ9IjcwMCIgZm9udC1zaXplPSIyNCIgZmlsbD0iIzFDMUIxOSI+UlA8L3RleHQ+PC9zdmc+Cg==\", 'base64')\n\nexport function GET() {\n    return new NextResponse(buffer, {\n        headers: {\n            'Content-Type': contentType,\n            'Cache-Control': cacheControl,\n        },\n    })\n}\n\nexport const dynamic = 'force-static'\n"],"names":[],"mappings":";;;;;;AAAA;;AAEA,MAAM,cAAc;AACpB,MAAM,eAAe;AACrB,MAAM,SAAS,OAAO,IAAI,CAAC,4UAA4U;AAEhW,SAAS;IACZ,OAAO,IAAI,gJAAY,CAAC,QAAQ;QAC5B,SAAS;YACL,gBAAgB;YAChB,iBAAiB;QACrB;IACJ;AACJ;AAEO,MAAM,UAAU","debugId":null}}]
+}
