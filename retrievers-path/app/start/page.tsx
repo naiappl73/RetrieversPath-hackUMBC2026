@@ -1,335 +1,457 @@
 "use client";
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+
+import React, { Suspense, useEffect, useState, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import {
-  areaOf, areas, experienceOptions, focusAreas, getProgram, levelLabels, minors as minorList, programs, yearsByLevel,
-  type Level,
-} from "@/lib/programs";
-import type { Plan, Profile } from "@/lib/plan";
-import { loadProfile, saveNewPlan } from "@/lib/storage";
+import { useAuth } from "@/lib/auth-context";
+import { api, type RecommendedField, type CareerInsightsResponse } from "@/lib/api";
+import CareerCard from "@/components/CareerCard";
+import CareerInsightsModal from "@/components/CareerInsightsModal";
+import { buildBuiltinPlan, finalizePlan } from "@/lib/plan";
+import { saveNewPlan } from "@/lib/storage";
 
-const steps = [
-  { name: "Program", title: "What are you studying?" },
-  { name: "Minors & focus", title: "Make it yours: minors and focus areas" },
-  { name: "Career goal", title: "Where do you want this to take you?" },
-  { name: "Where you are", title: "Where are you right now?" },
-  { name: "Review", title: "Review and build your plan" },
-];
-
-const empty: Profile = {
-  level: "undergrad", programIds: [], minors: [], focusIds: [], customFocus: "", careerGoal: "", year: "", experience: [], notes: "",
+const MAJORS_DATA: Record<string, string[]> = {
+  "Computer Science": [
+    "Data Science",
+    "Software Engineering",
+    "Artificial Intelligence",
+    "Cybersecurity",
+    "General",
+  ],
+  "Information Systems": [
+    "Business Analytics",
+    "Cybersecurity Management",
+    "Health Information Technology",
+    "Software Development",
+    "General",
+  ],
 };
 
-function Chip({ selected, onClick, children, disabled }: { selected: boolean; onClick: () => void; children: React.ReactNode; disabled?: boolean }) {
-  return (
-    <button type="button" aria-pressed={selected} onClick={onClick} disabled={disabled && !selected}
-      className={`press rounded-full border px-3.5 py-2 text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed ${selected ? "bg-teal text-white border-teal" : "bg-surface border-line hover:border-teal"}`}>
-      {children}
-    </button>
-  );
-}
+const INTEREST_OPTIONS = [
+  "Machine Learning",
+  "Data Engineering",
+  "Cybersecurity",
+  "Cloud & DevOps",
+  "Software Engineering",
+  "Web & Full-Stack",
+  "Health IT & Biomedical",
+  "Systems Architecture",
+  "Database Design",
+];
 
-function StartWizard() {
+function QuestionnaireContent() {
   const router = useRouter();
-  const params = useSearchParams();
-  const [step, setStep] = useState(0);
-  const [p, setP] = useState<Profile>(empty);
-  const [query, setQuery] = useState("");
-  const [area, setArea] = useState<string>("All");
-  const [customMinor, setCustomMinor] = useState("");
-  const [building, setBuilding] = useState(false);
-  const [error, setError] = useState("");
-  const heading = useRef<HTMLHeadingElement>(null);
+  const searchParams = useSearchParams();
+  const { user, isAuthenticated, isGuest, openLoginModal, targetJobFamily, setTargetJobFamily } = useAuth();
 
-  // Start from the saved profile (editing) or a program picked on a program page.
+  // State for Major & Track
+  const [major, setMajor] = useState<string>("Computer Science");
+  const [track, setTrack] = useState<string>("Data Science");
+  const [targetInterests, setTargetInterests] = useState<string[]>(["Machine Learning", "Data Engineering"]);
+
+  // Recommendations state
+  const [recommendations, setRecommendations] = useState<RecommendedField[] | null>(null);
+  const [loadingRecs, setLoadingRecs] = useState<boolean>(false);
+  const [recsError, setRecsError] = useState<string | null>(null);
+
+  // Insights drill-down state
+  const [isInsightsOpen, setIsInsightsOpen] = useState<boolean>(false);
+  const [selectedField, setSelectedField] = useState<RecommendedField | null>(null);
+  const [insights, setInsights] = useState<CareerInsightsResponse | null>(null);
+  const [loadingInsights, setLoadingInsights] = useState<boolean>(false);
+  const [insightsError, setInsightsError] = useState<string | null>(null);
+
+  // Auto-populate when user is authenticated
   useEffect(() => {
-    const saved = loadProfile();
-    const preset = params.get("program");
-    const prog = preset ? getProgram(preset) : undefined;
-    if (prog) setP({ ...(saved ?? empty), level: prog.level, programIds: [prog.id], year: saved?.level === prog.level ? saved.year : "" });
-    else if (saved?.programIds?.length) setP(saved);
-  }, [params]);
+    if (user && !user.isGuest) {
+      if (user.major && MAJORS_DATA[user.major]) {
+        setMajor(user.major);
+        setTrack(user.track || MAJORS_DATA[user.major][0]);
+      }
+    }
+  }, [user]);
 
-  useEffect(() => { heading.current?.focus(); }, [step]);
+  // Handle URL preset param (e.g. ?program=is-bs)
+  useEffect(() => {
+    const preset = searchParams.get("program");
+    if (preset === "is-bs") {
+      setMajor("Information Systems");
+      setTrack("Business Analytics");
+    } else if (preset === "cs-bs") {
+      setMajor("Computer Science");
+      setTrack("Data Science");
+    }
+  }, [searchParams]);
 
-  const set = (patch: Partial<Profile>) => setP((prev) => ({ ...prev, ...patch }));
-  const toggleIn = (key: "programIds" | "minors" | "focusIds" | "experience", value: string, max = 99) => {
-    setP((prev) => {
-      const list = prev[key];
-      if (list.includes(value)) return { ...prev, [key]: list.filter((v) => v !== value) };
-      return list.length >= max ? prev : { ...prev, [key]: [...list, value] };
-    });
-  };
+  // Function to fetch recommendations
+  const fetchRecommendations = useCallback(
+    async (m: string, t: string, interests: string[]) => {
+      setLoadingRecs(true);
+      setRecsError(null);
+      try {
+        const res = await api.getRecommendations({
+          major: m,
+          track: t,
+          target_interests: interests,
+        });
+        setRecommendations(res.recommended_fields || []);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Failed to load career recommendations.";
+        setRecsError(msg);
+      } finally {
+        setLoadingRecs(false);
+      }
+    },
+    []
+  );
 
-  const levelPrograms = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return programs.filter((x) => x.level === p.level && (area === "All" || areaOf(x) === area)
-      && (!q || `${x.name} ${x.degree} ${x.careers.join(" ")}`.toLowerCase().includes(q)));
-  }, [p.level, query, area]);
+  // Auto-fetch recommendations on mount or when student logs in
+  useEffect(() => {
+    fetchRecommendations(major, track, targetInterests);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [major, track]);
 
-  const chosen = p.programIds.map(getProgram).filter(Boolean);
-  const careerIdeas = Array.from(new Set(chosen.flatMap((x) => x!.careers))).slice(0, 10);
-  const canNext = [p.programIds.length > 0, true, true, p.year !== "", true][step];
-  const answers = [
-    chosen.map((x) => x!.name).join(" + "),
-    [...p.minors, ...p.focusIds.map((f) => focusAreas.find((x) => x.id === f)?.label)].filter(Boolean).join(", "),
-    p.careerGoal,
-    p.year,
-    "",
-  ];
+  // Handle form submit
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    fetchRecommendations(major, track, targetInterests);
+  }
 
-  async function build() {
-    setBuilding(true);
-    setError("");
+  // Toggle interest
+  function toggleInterest(item: string) {
+    setTargetInterests((prev) =>
+      prev.includes(item) ? prev.filter((i) => i !== item) : [...prev, item]
+    );
+  }
+
+  // Handle drill-down
+  async function handleDrillDown(field: RecommendedField) {
+    setSelectedField(field);
+    setIsInsightsOpen(true);
+    setLoadingInsights(true);
+    setInsightsError(null);
     try {
-      const res = await fetch("/api/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile: p }) });
-      const data = (await res.json()) as { plan?: Plan; note?: string; error?: string };
-      if (!res.ok || !data.plan) throw new Error(data.error || "Could not build a plan.");
-      saveNewPlan(p, data.plan);
-      try { if (data.note) sessionStorage.setItem("rp-plan-note", data.note); } catch { /* optional */ }
-      router.push("/roadmap");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong.");
-      setBuilding(false);
+      const data = await api.getCareerInsights(field.job_family);
+      setInsights(data);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to load insights for this career.";
+      setInsightsError(msg);
+    } finally {
+      setLoadingInsights(false);
     }
   }
 
-  function next(e: React.FormEvent) {
-    e.preventDefault();
-    if (!canNext) return;
-    if (step < steps.length - 1) setStep(step + 1);
-    else build();
+  // Handle selecting target and proceeding to roadmap
+  function handleSelectAndRoadmap(jobFamily: string) {
+    setTargetJobFamily(jobFamily);
+    setIsInsightsOpen(false);
+
+    // Save a base plan for the semester planner if not already existing
+    const programId = major === "Information Systems" ? "is-bs" : "cs-bs";
+    const basePlan = buildBuiltinPlan({
+      level: "undergrad",
+      programIds: [programId],
+      minors: [],
+      focusIds: [],
+      customFocus: track,
+      careerGoal: jobFamily,
+      year: user?.classLevel || "Junior",
+      experience: [],
+      notes: "Generated from RetrieversPath career recommendations",
+    });
+    saveNewPlan(
+      {
+        level: "undergrad",
+        programIds: [programId],
+        minors: [],
+        focusIds: [],
+        customFocus: track,
+        careerGoal: jobFamily,
+        year: user?.classLevel || "Junior",
+        experience: [],
+        notes: "",
+      },
+      finalizePlan(basePlan, "builtin")
+    );
+
+    router.push("/roadmap");
   }
 
-  if (building) return <BuildingScreen />;
-
   return (
-    <section className="mx-auto max-w-6xl px-4 py-10 lg:py-14 grid gap-8 lg:grid-cols-[280px_1fr] lg:gap-12 lg:items-start">
-      <aside className="grid gap-5 lg:sticky lg:top-28">
-        <div className="grid gap-2">
-          <p className="text-sm font-semibold text-ink-3">Step {step + 1} of {steps.length}</p>
-          <div className="h-2 rounded-full bg-surface-2" role="progressbar" aria-label="Setup progress" aria-valuenow={step + 1} aria-valuemin={1} aria-valuemax={steps.length}>
-            <div className="bar-fill h-2 rounded-full bg-gold" style={{ width: `${((step + 1) / steps.length) * 100}%` }} />
+    <div className="mx-auto max-w-6xl px-4 py-10 lg:py-14 grid gap-10">
+      {/* Top Banner & Authentication Context */}
+      <section className="glass-card p-6 lg:p-8 grid gap-4 rise">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="grid gap-1">
+            <span className="w-max rounded-full bg-gold-tint text-gold-deep text-xs font-bold px-3 py-1">
+              Historical Placement Engine
+            </span>
+            <h1 className="font-display text-3xl lg:text-4xl font-bold text-ink">
+              Explore Career Matches
+            </h1>
+            <p className="text-base text-ink-2 max-w-2xl">
+              Backed by PostgreSQL with ~140,000 historical UMBC records. See exact placement rates,
+              median starting salaries, and verified entry roles for your degree path.
+            </p>
+          </div>
+
+          {/* Student Status Card */}
+          <div className="rounded-2xl border border-line bg-surface-2 p-4 min-w-[260px] grid gap-2">
+            {isAuthenticated && user ? (
+              <>
+                <div className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full bg-mint" />
+                  <span className="text-xs font-bold uppercase tracking-wider text-ink-3">
+                    Connected Student
+                  </span>
+                </div>
+                <p className="font-display font-bold text-ink text-lg leading-none">
+                  {user.campusId}
+                </p>
+                <p className="text-xs text-ink-2">
+                  {user.classLevel} · {user.major} ({user.track})
+                </p>
+                <div className="pt-2 border-t border-line flex gap-2">
+                  <button
+                    type="button"
+                    onClick={openLoginModal}
+                    className="text-xs text-teal hover:underline font-semibold"
+                  >
+                    ⇄ Switch Student
+                  </button>
+                </div>
+              </>
+            ) : isGuest ? (
+              <>
+                <div className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full bg-teal" />
+                  <span className="text-xs font-bold uppercase tracking-wider text-teal">
+                    Guest Mode
+                  </span>
+                </div>
+                <p className="text-xs text-ink-2">
+                  You are exploring as a guest. Manual degree selection is enabled below.
+                </p>
+                <button
+                  type="button"
+                  onClick={openLoginModal}
+                  className="press rounded-full bg-gold text-on-gold px-3.5 py-1.5 text-xs font-bold hover:bg-gold-soft mt-1"
+                >
+                  Sign In with Campus ID
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="text-xs font-bold text-ink">Have a UMBC Student ID?</p>
+                <p className="text-xs text-ink-2">
+                  Sign in to auto-populate your program and run live transcript gap diffing.
+                </p>
+                <button
+                  type="button"
+                  onClick={openLoginModal}
+                  className="press rounded-full bg-gold text-on-gold px-4 py-2 text-xs font-bold hover:bg-gold-soft shadow-sm mt-1"
+                >
+                  ⚡ Sign In / Demo Student
+                </button>
+              </>
+            )}
           </div>
         </div>
-        <ol className="hidden lg:grid gap-2" aria-label="Setup steps">
-          {steps.map((s, i) => {
-            const state = i < step ? "done" : i === step ? "current" : "todo";
-            return (
-              <li key={s.name}>
-                <button type="button" disabled={i > step} onClick={() => setStep(i)} aria-current={state === "current" ? "step" : undefined}
-                  className={`press w-full text-left flex items-center gap-3 rounded-xl border px-4 py-3 disabled:cursor-default ${state === "current" ? "glass-card border-teal" : "border-line"}`}>
-                  <span aria-hidden="true" className={`grid place-items-center w-7 h-7 rounded-full text-sm font-bold shrink-0 ${state === "done" ? "bg-mint text-white" : state === "current" ? "bg-gold text-on-gold" : "bg-surface-2 text-ink-3"}`}>
-                    {state === "done" ? "✓" : i + 1}
-                  </span>
-                  <span className="grid min-w-0">
-                    <span className="font-semibold">{s.name}</span>
-                    <span className="text-sm text-ink-3 truncate">{answers[i] || (state === "todo" ? "Not yet" : i === 4 ? "Almost done" : "Optional")}</span>
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ol>
-      </aside>
 
-      <form onSubmit={next} className="grid gap-6 min-w-0">
-        <h1 ref={heading} tabIndex={-1} className="font-display text-3xl lg:text-4xl font-bold outline-none">{steps[step].title}</h1>
+        {/* Auto-populate notice */}
+        {isAuthenticated && user && (
+          <div className="rounded-xl border border-teal/30 bg-teal-tint/40 p-3 flex items-center justify-between text-xs text-teal">
+            <span>
+              ✓ <strong>Auto-populated:</strong> Major and track loaded from your student directory profile.
+            </span>
+            <span className="font-mono opacity-80">{user.email}</span>
+          </div>
+        )}
+      </section>
 
-        <div key={step} className="grid gap-6 rise">
-          {step === 0 && (
-            <>
-              <fieldset className="grid gap-2">
-                <legend className="font-semibold mb-2">Degree level</legend>
-                <div className="flex flex-wrap gap-2">
-                  {(Object.keys(levelLabels) as Level[]).map((l) => (
-                    <Chip key={l} selected={p.level === l} onClick={() => set({ level: l, programIds: [], year: "" })}>{levelLabels[l]}</Chip>
-                  ))}
-                </div>
-              </fieldset>
-              <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
-                <label className="grid gap-1.5">
-                  <span className="font-semibold">Search programs</span>
-                  <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Try “psychology”, “data”, or “nurse”…"
-                    className="rounded-xl border border-line bg-surface px-4 py-3 outline-none focus:border-teal" />
-                </label>
-                <label className="grid gap-1.5">
-                  <span className="font-semibold">Area</span>
-                  <select value={area} onChange={(e) => setArea(e.target.value)} className="rounded-xl border border-line bg-surface px-4 py-3">
-                    <option>All</option>
-                    {areas.map((a) => <option key={a}>{a}</option>)}
-                  </select>
-                </label>
-              </div>
-              {chosen.length > 0 && (
-                <div className="flex flex-wrap items-center gap-2 rounded-xl bg-teal-tint px-4 py-3" aria-live="polite">
-                  <span className="text-sm font-semibold text-teal">Selected:</span>
-                  {chosen.map((x) => (
-                    <button key={x!.id} type="button" onClick={() => toggleIn("programIds", x!.id)} aria-label={`Remove ${x!.name}`}
-                      className="press flex items-center gap-1.5 rounded-full bg-surface border border-teal px-3 py-1 text-sm font-semibold">
-                      {x!.name} ({x!.degree}) <span aria-hidden="true" className="text-ink-3">✕</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-              <p className="text-sm text-ink-3">Pick your major. Double major? Pick up to 2. ({levelPrograms.length} programs shown)</p>
-              <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 max-h-[26rem] overflow-y-auto pr-1 -mr-1">
-                {levelPrograms.map((x) => {
-                  const on = p.programIds.includes(x.id);
-                  return (
-                    <li key={x.id}>
-                      <button type="button" aria-pressed={on} onClick={() => toggleIn("programIds", x.id, 2)}
-                        className={`glass-card interactive w-full h-full text-left p-4 grid gap-1 ${on ? "!border-teal ring-2 ring-teal" : ""}`}>
-                        <span className="flex items-start justify-between gap-2">
-                          <span className="font-semibold">{x.name}</span>
-                          <span className="shrink-0 rounded-full bg-surface-2 text-ink-2 text-xs font-bold px-2 py-0.5">{x.degree}</span>
-                        </span>
-                        <span className="text-xs text-ink-3">{areaOf(x)}</span>
-                      </button>
-                    </li>
-                  );
-                })}
-                {levelPrograms.length === 0 && <li className="text-ink-3">No programs match. Try another search or area.</li>}
-              </ul>
-            </>
-          )}
+      {/* Questionnaire Form */}
+      <section aria-labelledby="questionnaire-title" className="glass-card p-6 lg:p-8 grid gap-6">
+        <div className="border-b border-line pb-4">
+          <h2 id="questionnaire-title" className="font-display text-xl font-bold text-ink">
+            1. Select Your Degree &amp; Focus
+          </h2>
+          <p className="text-sm text-ink-2">
+            Customize or confirm your academic focus to see corresponding alumni outcomes.
+          </p>
+        </div>
 
-          {step === 1 && (
-            <>
-              <fieldset className="grid gap-3">
-                <legend className="font-semibold mb-1">Minors <span className="font-normal text-ink-3">(up to 3, optional)</span></legend>
-                <div className="flex flex-wrap gap-2">
-                  {[...minorList, ...p.minors.filter((m) => !minorList.includes(m))].map((m) => (
-                    <Chip key={m} selected={p.minors.includes(m)} disabled={p.minors.length >= 3} onClick={() => toggleIn("minors", m, 3)}>{m}</Chip>
-                  ))}
-                </div>
-                <div className="flex gap-2 max-w-md">
-                  <input value={customMinor} onChange={(e) => setCustomMinor(e.target.value)} placeholder="Another minor or certificate"
-                    className="flex-1 rounded-xl border border-line bg-surface px-4 py-2.5 outline-none focus:border-teal" />
-                  <button type="button" className="press rounded-full border border-line bg-surface px-4 font-semibold hover:bg-surface-2"
-                    onClick={() => { const m = customMinor.trim(); if (m) { toggleIn("minors", m, 3); setCustomMinor(""); } }}>Add</button>
-                </div>
-              </fieldset>
-              <fieldset className="grid gap-3">
-                <legend className="font-semibold mb-1">Focus areas <span className="font-normal text-ink-3">(up to 4): what direction do you want your major to go?</span></legend>
-                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                  {focusAreas.map((f) => {
-                    const on = p.focusIds.includes(f.id);
-                    return (
-                      <button key={f.id} type="button" aria-pressed={on} disabled={!on && p.focusIds.length >= 4} onClick={() => toggleIn("focusIds", f.id, 4)}
-                        className={`press flex items-center gap-3 rounded-xl border px-4 py-3 text-left disabled:opacity-40 ${on ? "border-teal bg-teal-tint" : "border-line bg-surface hover:border-teal"}`}>
-                        <span aria-hidden="true" className="text-xl">{f.icon}</span>
-                        <span className="font-semibold text-sm">{f.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-                <label className="grid gap-1.5 max-w-xl">
-                  <span className="font-semibold">Something more specific?</span>
-                  <input value={p.customFocus} onChange={(e) => set({ customFocus: e.target.value })} maxLength={200}
-                    placeholder="e.g. medical devices, sports analytics, child therapy, voting rights"
-                    className="rounded-xl border border-line bg-surface px-4 py-3 outline-none focus:border-teal" />
-                </label>
-              </fieldset>
-            </>
-          )}
-
-          {step === 2 && (
-            <>
-              <p className="text-ink-2">Pick an idea or describe it in your own words. The more specific, the better your plan.</p>
-              <div className="flex flex-wrap gap-2">
-                {careerIdeas.map((c) => <Chip key={c} selected={p.careerGoal === c} onClick={() => set({ careerGoal: c })}>{c}</Chip>)}
-                <Chip selected={p.careerGoal === "Not sure yet"} onClick={() => set({ careerGoal: "Not sure yet" })}>Not sure yet</Chip>
-              </div>
-              <label className="grid gap-1.5">
-                <span className="font-semibold">My career goal</span>
-                <textarea value={p.careerGoal} onChange={(e) => set({ careerGoal: e.target.value })} rows={3} maxLength={300}
-                  placeholder="e.g. “Build software for medical devices at a hospital or med-tech company” or “Become a licensed clinical psychologist working with teens”"
-                  className="rounded-xl border border-line bg-surface px-4 py-3 outline-none focus:border-teal" />
+        <form onSubmit={handleSubmit} className="grid gap-6">
+          <div className="grid sm:grid-cols-2 gap-6">
+            {/* Major Selector */}
+            <div className="grid gap-2">
+              <label htmlFor="major-select" className="text-sm font-semibold text-ink">
+                UMBC Major
               </label>
-            </>
-          )}
-
-          {step === 3 && (
-            <>
-              <fieldset className="grid gap-2">
-                <legend className="font-semibold mb-2">Current year</legend>
-                <div className="flex flex-wrap gap-2">
-                  {yearsByLevel[p.level].map((y) => <Chip key={y} selected={p.year === y} onClick={() => set({ year: y })}>{y}</Chip>)}
-                </div>
-              </fieldset>
-              <fieldset className="grid gap-2">
-                <legend className="font-semibold mb-2">Experience so far <span className="font-normal text-ink-3">(pick any)</span></legend>
-                <div className="flex flex-wrap gap-2">
-                  {experienceOptions.map((x) => <Chip key={x} selected={p.experience.includes(x)} onClick={() => toggleIn("experience", x)}>{x}</Chip>)}
-                </div>
-              </fieldset>
-              <label className="grid gap-1.5">
-                <span className="font-semibold">Anything else we should know?</span>
-                <textarea value={p.notes} onChange={(e) => set({ notes: e.target.value })} rows={3} maxLength={500}
-                  placeholder="e.g. I work 20 hours a week, I transferred from community college, my advisor said to take STAT 355, I want to study abroad"
-                  className="rounded-xl border border-line bg-surface px-4 py-3 outline-none focus:border-teal" />
-              </label>
-            </>
-          )}
-
-          {step === 4 && (
-            <div className="glass-card p-6 grid gap-4">
-              <dl className="grid gap-3 sm:grid-cols-2">
-                {[
-                  ["Level", levelLabels[p.level]],
-                  ["Program(s)", chosen.map((x) => `${x!.name} (${x!.degree})`).join(" + ")],
-                  ["Minors", p.minors.join(", ") || "None"],
-                  ["Focus", [...p.focusIds.map((f) => focusAreas.find((x) => x.id === f)?.label), p.customFocus].filter(Boolean).join(", ") || "Not set"],
-                  ["Career goal", p.careerGoal || "Not sure yet"],
-                  ["Year", p.year],
-                  ["Experience", p.experience.join(", ") || "None listed"],
-                  ["Notes", p.notes || "None"],
-                ].map(([k, v]) => (
-                  <div key={k} className="grid gap-0.5">
-                    <dt className="text-xs font-semibold text-ink-3 uppercase tracking-wide">{k}</dt>
-                    <dd className="font-medium">{v}</dd>
-                  </div>
+              <select
+                id="major-select"
+                value={major}
+                onChange={(e) => {
+                  const newMajor = e.target.value;
+                  setMajor(newMajor);
+                  setTrack(MAJORS_DATA[newMajor][0]);
+                }}
+                className="w-full rounded-xl border border-line bg-bg px-4 py-3 text-sm font-semibold text-ink outline-none focus:border-gold"
+              >
+                {Object.keys(MAJORS_DATA).map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
                 ))}
-              </dl>
-              <p className="text-sm text-ink-3">Your plan is made with AI when it&apos;s set up, using UMBC programs and real career data. Always confirm course requirements with your advisor and the UMBC catalog.</p>
+              </select>
             </div>
+
+            {/* Track Selector */}
+            <div className="grid gap-2">
+              <label htmlFor="track-select" className="text-sm font-semibold text-ink">
+                Academic Track
+              </label>
+              <select
+                id="track-select"
+                value={track}
+                onChange={(e) => setTrack(e.target.value)}
+                className="w-full rounded-xl border border-line bg-bg px-4 py-3 text-sm font-semibold text-ink outline-none focus:border-gold"
+              >
+                {MAJORS_DATA[major]?.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Target Interests */}
+          <div className="grid gap-2">
+            <label className="text-sm font-semibold text-ink">
+              Target Interests &amp; Industry Directions{" "}
+              <span className="font-normal text-ink-3">(Select any that apply)</span>
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {INTEREST_OPTIONS.map((interest) => {
+                const isSelected = targetInterests.includes(interest);
+                return (
+                  <button
+                    key={interest}
+                    type="button"
+                    onClick={() => toggleInterest(interest)}
+                    className={`press rounded-full px-3.5 py-1.5 text-xs font-semibold border transition-all ${
+                      isSelected
+                        ? "bg-teal text-white border-teal shadow-sm"
+                        : "bg-surface border-line text-ink-2 hover:border-teal"
+                    }`}
+                  >
+                    {isSelected ? "✓ " : "+ "}
+                    {interest}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Submit Button */}
+          <div className="flex items-center justify-between pt-2">
+            <span className="text-xs text-ink-3">
+              Query: <code>POST /api/recommendations</code>
+            </span>
+            <button
+              type="submit"
+              disabled={loadingRecs}
+              className="press flex items-center gap-2 rounded-full bg-gold px-6 py-3 font-bold text-on-gold hover:bg-gold-soft shadow-md disabled:opacity-50"
+            >
+              {loadingRecs ? (
+                <>
+                  <svg className="w-5 h-5 animate-spin text-on-gold" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                    />
+                  </svg>
+                  <span>Querying 140k Alumni Records...</span>
+                </>
+              ) : (
+                <span>Analyze Career Matches →</span>
+              )}
+            </button>
+          </div>
+        </form>
+      </section>
+
+      {/* Career Match Cards Section */}
+      <section aria-labelledby="recommendations-title" className="grid gap-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 id="recommendations-title" className="font-display text-2xl lg:text-3xl font-bold text-ink">
+              2. Alumni Career Placement Matches
+            </h2>
+            <p className="text-sm text-ink-2">
+              Historical career outcomes for <strong>{major}</strong> ({track}) graduates.
+            </p>
+          </div>
+          {recommendations && (
+            <span className="text-xs font-mono font-semibold text-ink-3 bg-surface-2 px-3 py-1.5 rounded-full">
+              {recommendations.length} job families identified
+            </span>
           )}
         </div>
 
-        {error && <p role="alert" className="rounded-xl bg-coral-tint text-coral font-semibold px-4 py-3">{error}</p>}
+        {loadingRecs ? (
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5 animate-pulse" aria-busy="true">
+            {[1, 2, 3, 4, 5, 6].map((i) => (
+              <div key={i} className="h-64 rounded-2xl bg-surface-2" />
+            ))}
+          </div>
+        ) : recsError ? (
+          <div className="rounded-2xl border border-coral/30 bg-coral-tint p-6 text-center grid gap-3">
+            <h3 className="font-bold text-coral text-lg">Unable to Load Recommendations</h3>
+            <p className="text-sm text-ink-2 max-w-md mx-auto">{recsError}</p>
+            <button
+              type="button"
+              onClick={() => fetchRecommendations(major, track, targetInterests)}
+              className="press mx-auto rounded-full bg-surface border border-line px-5 py-2 text-xs font-bold hover:bg-surface-2"
+            >
+              Retry
+            </button>
+          </div>
+        ) : recommendations && recommendations.length > 0 ? (
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5 stagger">
+            {recommendations.map((field) => (
+              <CareerCard
+                key={field.job_family}
+                field={field}
+                isSelected={targetJobFamily === field.job_family}
+                onSelect={(f) => handleSelectAndRoadmap(f.job_family)}
+                onDrillDown={handleDrillDown}
+              />
+            ))}
+          </div>
+        ) : (
+          <p className="text-ink-3 py-8 text-center">No career matches found for this selection.</p>
+        )}
+      </section>
 
-        <div className="flex items-center justify-between gap-3 border-t border-line pt-6">
-          <button type="button" onClick={() => setStep(step - 1)} disabled={step === 0}
-            className="press rounded-full px-5 py-2.5 font-semibold text-teal hover:bg-teal-tint disabled:invisible">← Back</button>
-          <button type="submit" disabled={!canNext}
-            className="press bg-gold text-on-gold rounded-full px-6 py-3 font-bold hover:bg-gold-soft disabled:opacity-40 disabled:cursor-not-allowed">
-            {step < steps.length - 1 ? "Next" : "✨ Build my plan"}
-          </button>
-        </div>
-      </form>
-    </section>
-  );
-}
-
-// Shown while the plan is generated (AI can take 20-60 seconds).
-function BuildingScreen() {
-  const lines = ["Reading your program and focus areas…", "Matching careers to your goal…", "Choosing classes and skills for each year…", "Finding project and internship ideas…", "Putting your plan together…"];
-  const [i, setI] = useState(0);
-  useEffect(() => {
-    const t = setInterval(() => setI((n) => Math.min(n + 1, lines.length - 1)), 4500);
-    return () => clearInterval(t);
-  }, [lines.length]);
-  return (
-    <section className="mx-auto max-w-xl px-4 py-24 grid gap-6 justify-items-center text-center" aria-live="polite" aria-busy="true">
-      <div className="building-orb" aria-hidden="true"><span /><span /><span /></div>
-      <h1 className="font-display text-3xl font-bold">Building your plan</h1>
-      <p key={i} className="text-lg text-ink-2 rise">{lines[i]}</p>
-      <p className="text-sm text-ink-3">This can take up to a minute.</p>
-    </section>
+      {/* Drill-down Modal */}
+      <CareerInsightsModal
+        isOpen={isInsightsOpen}
+        onClose={() => setIsInsightsOpen(false)}
+        insights={insights}
+        loading={loadingInsights}
+        error={insightsError}
+        onSelectAndRoadmap={handleSelectAndRoadmap}
+      />
+    </div>
   );
 }
 
 export default function Start() {
-  return <Suspense><StartWizard /></Suspense>;
+  return (
+    <Suspense fallback={<div className="p-12 text-center text-ink-3">Loading career explorer...</div>}>
+      <QuestionnaireContent />
+    </Suspense>
+  );
 }

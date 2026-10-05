@@ -1,9 +1,13 @@
 "use client";
+
 import Link from "next/link";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { isJobTitle, itemKinds, RESOURCE_LINKS, usajobsSearchUrl, type ItemKind, type Plan } from "@/lib/plan";
+import { useEffect, useId, useMemo, useRef, useState, useCallback } from "react";
+import { isJobTitle, itemKinds, RESOURCE_LINKS, usajobsSearchUrl, type ItemKind, type Plan, buildBuiltinPlan, finalizePlan } from "@/lib/plan";
 import { focusAreas, getProgram, yearsByLevel } from "@/lib/programs";
-import { useRoadmap, type CustomItem } from "@/lib/storage";
+import { useRoadmap, saveNewPlan, type CustomItem } from "@/lib/storage";
+import { useAuth } from "@/lib/auth-context";
+import { api, type RoadmapResponse } from "@/lib/api";
+import TranscriptGapRoadmap from "@/components/TranscriptGapRoadmap";
 import type { Job } from "@/app/api/jobs/route";
 
 const kindStyle: Record<ItemKind, string> = {
@@ -20,29 +24,143 @@ type Row = { id: string; title: string; kind: ItemKind; detail: string; mine: bo
 
 export default function Roadmap() {
   const { ready, profile, plan, done, custom, hidden, toggle, addItem, removeItem, restoreAll, reset } = useRoadmap();
+  const { user, isAuthenticated, isGuest, targetJobFamily, setTargetJobFamily, openLoginModal, login } = useAuth();
+
   const [yearIdx, setYearIdx] = useState<number | null>(null);
   const [note, setNote] = useState("");
 
-  useEffect(() => {
-    try { const n = sessionStorage.getItem("rp-plan-note"); if (n) { setNote(n); sessionStorage.removeItem("rp-plan-note"); } } catch { /* optional */ }
+  // Backend Roadmap state (POST /api/roadmap/generate)
+  const [roadmapData, setRoadmapData] = useState<RoadmapResponse | null>(null);
+  const [roadmapLoading, setRoadmapLoading] = useState<boolean>(false);
+  const [roadmapError, setRoadmapError] = useState<string | null>(null);
+  const [demoLoading, setDemoLoading] = useState<boolean>(false);
+
+  // Fetch backend roadmap whenever authenticated campus_id or target career changes
+  const fetchBackendRoadmap = useCallback(async (campusId: string, career: string) => {
+    setRoadmapLoading(true);
+    setRoadmapError(null);
+    try {
+      const data = await api.generateRoadmap({
+        campus_id: campusId,
+        target_job_family: career,
+      });
+      setRoadmapData(data);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to generate roadmap from backend.";
+      setRoadmapError(msg);
+    } finally {
+      setRoadmapLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    if (isAuthenticated && user?.campusId) {
+      fetchBackendRoadmap(user.campusId, targetJobFamily || "Data & Analytics");
+    }
+  }, [isAuthenticated, user?.campusId, targetJobFamily, fetchBackendRoadmap]);
+
+  useEffect(() => {
+    try {
+      const n = sessionStorage.getItem("rp-plan-note");
+      if (n) {
+        setNote(n);
+        sessionStorage.removeItem("rp-plan-note");
+      }
+    } catch {
+      /* optional */
+    }
+  }, []);
+
+  // Quick 1-click Demo Student login
+  async function handleDemoLogin() {
+    setDemoLoading(true);
+    try {
+      await login("test@umbc.edu", "CID-116490");
+    } catch {
+      /* handled in context */
+    } finally {
+      setDemoLoading(false);
+    }
+  }
+
+  // Auto-initialize fallback plan if user is authenticated but no local plan exists
+  useEffect(() => {
+    if (ready && !plan && isAuthenticated && user) {
+      const progId = user.major === "Information Systems" ? "is-bs" : "cs-bs";
+      const autoProfile = {
+        level: "undergrad" as const,
+        programIds: [progId],
+        minors: [],
+        focusIds: [],
+        customFocus: user.track,
+        careerGoal: targetJobFamily || "Data & Analytics",
+        year: user.classLevel || "Junior",
+        experience: [],
+        notes: "Auto-generated for authenticated UMBC student",
+      };
+      const autoPlan = finalizePlan(buildBuiltinPlan(autoProfile), "builtin");
+      saveNewPlan(autoProfile, autoPlan);
+      window.location.reload();
+    }
+  }, [ready, plan, isAuthenticated, user, targetJobFamily]);
 
   if (!ready) {
     return (
       <div className="mx-auto max-w-6xl px-4 py-10 lg:py-14 grid gap-6 lg:grid-cols-[320px_1fr] lg:gap-10 animate-pulse" aria-busy="true" aria-label="Loading your plan">
         <div className="h-96 rounded-2xl bg-surface-2" />
-        <div className="grid gap-6"><div className="h-10 w-2/3 rounded-xl bg-surface-2" /><div className="h-80 rounded-2xl bg-surface-2" /></div>
+        <div className="grid gap-6">
+          <div className="h-10 w-2/3 rounded-xl bg-surface-2" />
+          <div className="h-80 rounded-2xl bg-surface-2" />
+        </div>
       </div>
     );
   }
 
   if (!profile || !plan) {
     return (
-      <section className="mx-auto max-w-2xl px-4 py-24 grid gap-5 justify-items-start rise">
-        <p className="rounded-full bg-gold-tint text-gold-deep text-sm font-bold px-3 py-1">No plan yet</p>
-        <h1 className="font-display text-4xl font-bold">Let&apos;s build your plan</h1>
-        <p className="text-lg text-ink-2">Tell us your program, focus, and career goal, and we&apos;ll lay out every year: classes, projects, internships, and more.</p>
-        <Link href="/start" className="press bg-gold text-on-gold rounded-full px-6 py-3 font-bold hover:bg-gold-soft">Get started</Link>
+      <section className="mx-auto max-w-2xl px-4 py-20 grid gap-6 justify-items-start rise">
+        <span className="rounded-full bg-gold-tint text-gold-deep text-sm font-bold px-3 py-1">
+          Personalized Career Roadmap
+        </span>
+        <h1 className="font-display text-4xl font-bold text-ink">
+          Connect Your Student Path
+        </h1>
+        <p className="text-lg text-ink-2">
+          Run automated transcript gap diffing against 140,000+ historical UMBC alumni records, or build a custom semester-by-semester checklist.
+        </p>
+
+        <div className="rounded-2xl border border-line bg-surface p-6 w-full grid gap-4">
+          <div className="flex items-center gap-3">
+            <span className="grid place-items-center w-10 h-10 rounded-xl bg-gold text-on-gold font-bold">
+              ⚡
+            </span>
+            <div>
+              <h2 className="font-display font-bold text-ink text-base">
+                Instant Demo Student (CID-116490)
+              </h2>
+              <p className="text-xs text-ink-2">
+                Loads live transcript data, calculates verified skills, and identifies course gaps.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 pt-2">
+            <button
+              type="button"
+              onClick={handleDemoLogin}
+              disabled={demoLoading}
+              className="press rounded-full bg-gold px-6 py-3 font-bold text-on-gold hover:bg-gold-soft shadow-md disabled:opacity-50"
+            >
+              {demoLoading ? "Connecting to PostgreSQL..." : "Load Demo Student (CID-116490)"}
+            </button>
+            <Link
+              href="/start"
+              className="press rounded-full border border-line px-5 py-3 font-semibold text-ink hover:bg-surface-2"
+            >
+              Explore Career Matches →
+            </Link>
+          </div>
+        </div>
       </section>
     );
   }
@@ -60,17 +178,59 @@ export default function Roadmap() {
   const programs = profile.programIds.map(getProgram).filter(Boolean);
   const focus = [...profile.focusIds.map((f) => focusAreas.find((x) => x.id === f)?.label), profile.customFocus].filter(Boolean);
 
+  // Add course from transcript diff into timeline checklist
+  const handleAddCourseToPlan = (course: { course_id: string; title: string; addresses_skills: string[] }) => {
+    addItem({
+      title: `${course.course_id}: ${course.title}`,
+      kind: "Class",
+      detail: `Recommended by transcript gap analysis. Addresses: ${course.addresses_skills.join(", ")}`,
+      yearIndex: active,
+    });
+  };
+
+  // Add research lab from transcript diff into timeline checklist
+  const handleAddLabToPlan = (lab: { role: string; lab: string }) => {
+    addItem({
+      title: `${lab.role} (${lab.lab})`,
+      kind: "Experience",
+      detail: `Historical undergraduate research pathway for ${targetJobFamily}`,
+      yearIndex: active,
+    });
+  };
+
   return (
     <div className="mx-auto max-w-6xl px-4 py-10 lg:py-14 grid gap-6 lg:grid-cols-[320px_1fr] lg:gap-x-10 lg:items-start">
+      {/* Header */}
       <header className="grid gap-2 lg:col-start-2 lg:row-start-1 rise">
-        <p className="text-sm font-semibold text-ink-3 flex items-center gap-2">
-          {plan.generatedBy === "ai" ? <span className="rounded-full bg-teal-tint text-teal text-xs font-bold px-2.5 py-1">✨ AI-personalized</span>
-            : <span className="rounded-full bg-surface-2 text-ink-2 text-xs font-bold px-2.5 py-1">Offline planner</span>}
-          <span>{plan.headline}</span>
-        </p>
-        <h1 className="font-display text-3xl lg:text-4xl font-bold">
-          {isJobTitle(profile.careerGoal) ? `Your path to ${profile.careerGoal}` : `Your path to ${plan.careerTargets[0]?.title ?? "your goal"}`}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-sm font-semibold text-ink-3 flex items-center gap-2">
+            {isAuthenticated ? (
+              <span className="rounded-full bg-gold-tint text-gold-deep text-xs font-bold px-2.5 py-1">
+                🎓 Verified Student: {user?.campusId}
+              </span>
+            ) : (
+              <span className="rounded-full bg-surface-2 text-ink-2 text-xs font-bold px-2.5 py-1">
+                Guest View
+              </span>
+            )}
+            <span>{plan.headline}</span>
+          </p>
+
+          {!isAuthenticated && (
+            <button
+              type="button"
+              onClick={openLoginModal}
+              className="press text-xs font-bold text-gold-deep bg-gold-tint px-3 py-1.5 rounded-full hover:bg-gold-soft/40"
+            >
+              ⚡ Sign In to Unlock Transcript Diff
+            </button>
+          )}
+        </div>
+
+        <h1 className="font-display text-3xl lg:text-4xl font-bold text-ink">
+          {isJobTitle(profile.careerGoal) ? `Your path to ${profile.careerGoal}` : `Your path to ${targetJobFamily || plan.careerTargets[0]?.title || "your goal"}`}
         </h1>
+
         {profile.careerGoal && !isJobTitle(profile.careerGoal) && profile.careerGoal !== "Not sure yet" && (
           <p className="text-ink font-medium"><span aria-hidden="true">🎯 </span>Your goal: “{profile.careerGoal}”</p>
         )}
@@ -78,12 +238,21 @@ export default function Roadmap() {
         {note && <p role="status" className="rounded-xl bg-gold-tint text-ink text-sm px-4 py-2.5">{note}</p>}
       </header>
 
-      {/* ---------- Sidebar: profile + progress ---------- */}
+      {/* Sidebar: profile + progress */}
       <aside aria-label="Your profile and progress" className="grid gap-5 lg:col-start-1 lg:row-start-1 lg:row-span-2 lg:sticky lg:top-28 stagger">
         <div className="glass-card p-6 grid gap-5">
           <div className="grid gap-1">
-            <p className="text-sm font-semibold text-ink-3">{profile.year}</p>
-            <p className="font-display text-lg font-semibold leading-snug">{programs.map((x) => `${x!.name} (${x!.degree})`).join(" + ")}</p>
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold text-ink-3">{profile.year}</p>
+              {isAuthenticated && user && (
+                <span className="text-xs font-mono font-bold text-mint bg-mint-tint px-2 py-0.5 rounded">
+                  {user.campusId}
+                </span>
+              )}
+            </div>
+            <p className="font-display text-lg font-semibold leading-snug">
+              {programs.map((x) => `${x!.name} (${x!.degree})`).join(" + ")}
+            </p>
             {profile.minors.length > 0 && <p className="text-sm text-ink-2">Minor: {profile.minors.join(", ")}</p>}
             {focus.length > 0 && (
               <ul className="flex flex-wrap gap-1.5 mt-2" aria-label="Focus areas">
@@ -91,12 +260,14 @@ export default function Roadmap() {
               </ul>
             )}
           </div>
+
           <div>
             <div className="flex justify-between text-sm mb-1.5"><span className="text-ink-2 font-medium">Overall progress</span><span className="font-mono">{pct}%</span></div>
             <div className="h-3 rounded-full bg-surface-2" role="progressbar" aria-label="Plan progress" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
               <div className="bar-fill h-3 rounded-full bg-gold" style={{ width: `${pct}%` }} />
             </div>
           </div>
+
           <dl className="grid grid-cols-3 gap-3">
             {[{ label: "Done", value: doneCount }, { label: "To go", value: allRows.length - doneCount }, { label: "Year", value: currentIdx + 1 }].map((s) => (
               <div key={s.label} className="bg-surface-2 rounded-xl p-3">
@@ -105,15 +276,20 @@ export default function Roadmap() {
               </div>
             ))}
           </dl>
+
           {nextUp ? <p className="rounded-xl bg-gold-tint text-ink px-4 py-3"><span className="font-bold">Up next:</span> {nextUp.title}</p>
             : <p className="rounded-xl bg-mint-tint text-mint font-bold px-4 py-3">🎉 You finished every step!</p>}
+
           <div className="flex flex-wrap gap-2">
-            <Link href="/start" className="press whitespace-nowrap rounded-full border border-line bg-surface px-4 py-2 text-sm font-semibold hover:bg-surface-2">Edit answers</Link>
+            <Link href="/start" className="press whitespace-nowrap rounded-full border border-line bg-surface px-4 py-2 text-sm font-semibold hover:bg-surface-2">
+              Career Explorer
+            </Link>
             {programs[0] && <Link href={`/paths/${programs[0].id}`} className="press whitespace-nowrap rounded-full border border-line bg-surface px-4 py-2 text-sm font-semibold hover:bg-surface-2">About my program</Link>}
             <button type="button" onClick={() => { if (confirm("Start over? This deletes your plan, checkmarks, and added items.")) reset(); }}
               className="press whitespace-nowrap rounded-full px-4 py-2 text-sm font-semibold text-coral hover:bg-coral-tint">Start over</button>
           </div>
         </div>
+
         {plan.keySkills.length > 0 && (
           <div className="glass-card p-5 grid gap-2">
             <p className="text-xs font-semibold text-ink-3 uppercase tracking-wide">Key skills to build</p>
@@ -122,26 +298,79 @@ export default function Roadmap() {
         )}
       </aside>
 
-      {/* ---------- Main: the selected year ---------- */}
-      <div className="grid gap-6 min-w-0 lg:col-start-2">
-        <nav aria-label="Years" className="flex gap-2 overflow-x-auto pb-1">
-          {plan.years.map((y, yi) => {
-            const rows = rowsFor(yi);
-            const d = rows.filter((r) => done.includes(r.id)).length;
-            return (
-              <button key={y.label} type="button" onClick={() => setYearIdx(yi)} aria-current={yi === active ? "true" : undefined}
-                className={`press shrink-0 rounded-2xl border px-4 py-2.5 text-left ${yi === active ? "glass-card !border-gold ring-2 ring-gold" : "border-line bg-surface hover:border-teal"}`}>
-                <span className="block text-sm font-semibold whitespace-nowrap">{y.label.split(" · ")[0]}{yi === currentIdx && <span className="ml-1.5 text-gold-deep">● now</span>}</span>
-                <span className="block text-xs text-ink-3 font-mono">{d}/{rows.length} done</span>
+      {/* Main Content Area */}
+      <div className="grid gap-8 min-w-0 lg:col-start-2">
+        {/* Requirement 4: Actionable Roadmap View with live transcript diffing */}
+        {isAuthenticated && user?.campusId ? (
+          <TranscriptGapRoadmap
+            roadmap={roadmapData}
+            loading={roadmapLoading}
+            error={roadmapError}
+            selectedTarget={targetJobFamily || "Data & Analytics"}
+            onTargetChange={(newTarget) => {
+              setTargetJobFamily(newTarget);
+              fetchBackendRoadmap(user.campusId, newTarget);
+            }}
+            onAddCourseToPlan={handleAddCourseToPlan}
+            onAddLabToPlan={handleAddLabToPlan}
+          />
+        ) : (
+          <div className="glass-card p-6 border-2 border-dashed border-line rounded-2xl grid gap-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <span className="rounded-full bg-gold-tint text-gold-deep text-xs font-bold px-3 py-1">
+                  Automated Transcript Diffing
+                </span>
+                <h3 className="font-display text-xl font-bold text-ink mt-2">
+                  Unlock Your Transcript Gap Analysis
+                </h3>
+                <p className="text-sm text-ink-2 max-w-xl">
+                  Sign in with your Campus ID to see verified skills extracted from your transcript,
+                  specific skill gaps for {targetJobFamily || "your target career"}, and recommended next UMBC courses.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleDemoLogin}
+                disabled={demoLoading}
+                className="press rounded-full bg-gold px-5 py-2.5 text-xs font-bold text-on-gold hover:bg-gold-soft shadow-md shrink-0"
+              >
+                {demoLoading ? "Connecting..." : "⚡ Quick Demo (CID-116490)"}
               </button>
-            );
-          })}
-        </nav>
+            </div>
+          </div>
+        )}
 
+        {/* Timeline Navigation */}
+        <div className="grid gap-4">
+          <div className="flex items-center justify-between">
+            <h2 className="font-display text-xl font-bold text-ink">
+              Semester-by-Semester Execution Plan
+            </h2>
+            <span className="text-xs text-ink-3">Interactive Checklist</span>
+          </div>
+
+          <nav aria-label="Years" className="flex gap-2 overflow-x-auto pb-1">
+            {plan.years.map((y, yi) => {
+              const rows = rowsFor(yi);
+              const d = rows.filter((r) => done.includes(r.id)).length;
+              return (
+                <button key={y.label} type="button" onClick={() => setYearIdx(yi)} aria-current={yi === active ? "true" : undefined}
+                  className={`press shrink-0 rounded-2xl border px-4 py-2.5 text-left ${yi === active ? "glass-card !border-gold ring-2 ring-gold" : "border-line bg-surface hover:border-teal"}`}>
+                  <span className="block text-sm font-semibold whitespace-nowrap">{y.label.split(" · ")[0]}{yi === currentIdx && <span className="ml-1.5 text-gold-deep">● now</span>}</span>
+                  <span className="block text-xs text-ink-3 font-mono">{d}/{rows.length} done</span>
+                </button>
+              );
+            })}
+          </nav>
+        </div>
+
+        {/* Active Year Panel */}
         <YearPanel key={`${plan.id}-${active}`} plan={plan} yearIdx={active} isCurrent={active === currentIdx}
           rows={rowsFor(active)} done={done} hiddenCount={plan.years[active].items.filter((i) => hidden.includes(i.id)).length}
           onToggle={toggle} onAdd={(item) => addItem({ ...item, yearIndex: active })} onRemove={removeItem} onRestore={restoreAll} />
 
+        {/* Live Federal Jobs */}
         <JobsPanel plan={plan} />
       </div>
     </div>
@@ -245,8 +474,9 @@ function AddItemForm({ onSave, onCancel }: { onSave: (item: { title: string; kin
   const [detail, setDetail] = useState("");
   const titleRef = useRef<HTMLInputElement>(null);
   const uid = useId();
-  // Move focus into the form when it opens (instead of autoFocus, which the a11y linter flags).
+
   useEffect(() => { titleRef.current?.focus(); }, []);
+
   return (
     <form className="pop grid gap-3 rounded-2xl border border-teal bg-surface p-4"
       onSubmit={(e) => { e.preventDefault(); if (title.trim()) onSave({ title: title.trim(), kind, detail: detail.trim() }); }}>
@@ -255,7 +485,7 @@ function AddItemForm({ onSave, onCancel }: { onSave: (item: { title: string; kin
         <div className="grid gap-1">
           <label htmlFor={`${uid}-title`} className="text-sm font-semibold">What is it?</label>
           <input id={`${uid}-title`} ref={titleRef} required value={title} onChange={(e) => setTitle(e.target.value)} maxLength={120}
-            placeholder="e.g. Take STAT 355 (advisor suggested)" className="rounded-xl border border-line bg-bg px-3 py-2.5 outline-none focus:border-teal" />
+            placeholder="e.g. Take CMSC 461 (Database Systems)" className="rounded-xl border border-line bg-bg px-3 py-2.5 outline-none focus:border-teal" />
         </div>
         <div className="grid gap-1">
           <label htmlFor={`${uid}-kind`} className="text-sm font-semibold">Type</label>
@@ -277,7 +507,6 @@ function AddItemForm({ onSave, onCancel }: { onSave: (item: { title: string; kin
   );
 }
 
-// Live federal job postings (USAJOBS) for the plan's target careers.
 function JobsPanel({ plan }: { plan: Plan }) {
   const targets = plan.careerTargets;
   const [sel, setSel] = useState(0);
@@ -308,7 +537,7 @@ function JobsPanel({ plan }: { plan: Plan }) {
             className={`press rounded-full px-3.5 py-1.5 text-sm font-semibold border ${i === sel ? "bg-teal text-white border-teal" : "bg-surface border-line hover:border-teal"}`}>{t.title}</button>
         ))}
       </div>
-      <p className="text-ink-2 text-sm"><span className="font-semibold text-ink">{targets[sel].title}:</span> {targets[sel].why}</p>
+      <p className="text-ink-2 text-sm"><span className="font-semibold text-ink">{targets[sel]?.title}:</span> {targets[sel]?.why}</p>
 
       {state.loading ? (
         <ul className="grid gap-2 animate-pulse" aria-busy="true">{[0, 1, 2].map((i) => <li key={i} className="h-16 rounded-xl bg-surface-2" />)}</ul>

@@ -1,91 +1,96 @@
 "use client";
 
-import { FormEvent, useState } from "react";
-import { supabase } from "@/lib/supabase";
+import React, { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useAuth } from "@/lib/auth-context";
 
 export default function AuthPage() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [message, setMessage] = useState("");
+  const router = useRouter();
+  const { login, loginAsGuest, isAuthenticated, user } = useAuth();
+  const [email, setEmail] = useState("test@umbc.edu");
+  const [studentId, setStudentId] = useState("CID-116490");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  async function handleSignUp(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setLoading(true);
-    setMessage("");
-
-    const { error } = await supabase.auth.signUp({
-      email,
-      password,
-    });
-
-    if (error) {
-      setMessage(error.message);
-    } else {
-      setMessage("Account created. Check your email to confirm your account.");
-    }
-
-    setLoading(false);
+  if (isAuthenticated && user) {
+    return (
+      <main className="mx-auto max-w-md p-6 my-16 text-center grid gap-4 glass-card">
+        <h1 className="font-display text-2xl font-bold">Already Signed In</h1>
+        <p className="text-sm text-ink-2">Signed in as {user.campusId} ({user.major})</p>
+        <button
+          onClick={() => router.push("/start")}
+          className="press bg-gold text-on-gold rounded-full px-6 py-2.5 font-bold mx-auto"
+        >
+          Go to Career Explorer →
+        </button>
+      </main>
+    );
   }
 
-  async function handleSignIn() {
+  async function handleLogin(e: React.FormEvent) {
+    e.preventDefault();
     setLoading(true);
-    setMessage("");
-
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-
-    if (error) {
-      setMessage(error.message);
-    } else {
-      setMessage("Signed in successfully.");
+    setError(null);
+    try {
+      await login(email, studentId);
+      router.push("/start");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to sign in");
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   }
 
   return (
-    <main style={{ maxWidth: 420, margin: "4rem auto", padding: "1rem" }}>
-      <h1>RetrieversPath Account</h1>
+    <main className="mx-auto max-w-md p-6 sm:p-8 my-16 grid gap-6 glass-card rise">
+      <div>
+        <h1 className="font-display text-2xl font-bold text-ink">UMBC Student Sign In</h1>
+        <p className="text-sm text-ink-2">Sign in with your official @umbc.edu email and Campus ID</p>
+      </div>
 
-      <form onSubmit={handleSignUp}>
-        <div>
-          <label htmlFor="email">Email</label>
+      {error && <p className="rounded-xl bg-coral-tint text-coral text-sm p-3 font-semibold">{error}</p>}
+
+      <form onSubmit={handleLogin} className="grid gap-4">
+        <div className="grid gap-1">
+          <label htmlFor="auth-email" className="text-sm font-semibold text-ink">UMBC Email</label>
           <input
-            id="email"
+            id="auth-email"
             type="email"
             value={email}
-            onChange={(event) => setEmail(event.target.value)}
+            onChange={(e) => setEmail(e.target.value)}
             required
+            className="rounded-xl border border-line bg-bg px-3.5 py-2.5 text-sm outline-none focus:border-gold"
           />
         </div>
 
-        <div>
-          <label htmlFor="password">Password</label>
+        <div className="grid gap-1">
+          <label htmlFor="auth-id" className="text-sm font-semibold text-ink">Campus ID</label>
           <input
-            id="password"
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
+            id="auth-id"
+            type="text"
+            value={studentId}
+            onChange={(e) => setStudentId(e.target.value)}
             required
-            minLength={6}
+            className="rounded-xl border border-line bg-bg px-3.5 py-2.5 text-sm font-mono outline-none focus:border-gold"
           />
         </div>
 
-        <div style={{ display: "flex", gap: "0.75rem", marginTop: "1rem" }}>
-          <button type="button" onClick={handleSignIn} disabled={loading}>
-            Sign In
-          </button>
-
-          <button type="submit" disabled={loading}>
-            Sign Up
-          </button>
-        </div>
+        <button
+          type="submit"
+          disabled={loading}
+          className="press bg-gold text-on-gold rounded-full px-6 py-3 font-bold hover:bg-gold-soft shadow-md disabled:opacity-50 mt-2"
+        >
+          {loading ? "Authenticating..." : "Sign In with Campus ID"}
+        </button>
       </form>
 
-      {message && <p>{message}</p>}
+      <button
+        type="button"
+        onClick={() => { loginAsGuest(); router.push("/start"); }}
+        className="text-xs text-center text-teal hover:underline pt-1"
+      >
+        Continue as Guest instead →
+      </button>
     </main>
   );
 }

@@ -2,10 +2,29 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ItemKind, Plan, Profile } from "@/lib/plan";
 
-// Everything is saved in this browser only (no accounts or backend database yet).
-const KEYS = { profile: "rp-profile-v2", plan: "rp-plan-v2", done: "rp-done-v2", custom: "rp-custom-v2", hidden: "rp-hidden-v2" };
+// Everything is saved in this browser.
+const KEYS = {
+  profile: "rp-profile-v2",
+  plan: "rp-plan-v2",
+  done: "rp-done-v2",
+  custom: "rp-custom-v2",
+  hidden: "rp-hidden-v2",
+  auth: "rp-auth-v1",
+  targetJobFamily: "rp-target-job-family-v1",
+  backendRoadmap: "rp-backend-roadmap-v1",
+  recommendations: "rp-recommendations-v1",
+};
 // Remove data from the first prototype so it can't confuse the new format.
 const OLD_KEYS = ["rp-profile", "rp-done"];
+
+export interface AuthUser {
+  campusId: string;
+  email: string;
+  major: string;
+  track: string;
+  classLevel: string;
+  isGuest?: boolean;
+}
 
 export type CustomItem = { id: string; yearIndex: number; title: string; kind: ItemKind; detail: string };
 
@@ -24,6 +43,26 @@ function write(key: string, value: unknown) {
   } catch {
     // Storage blocked (private mode etc.): the page still works, it just won't remember.
   }
+}
+
+export function saveAuthUser(user: AuthUser | null) {
+  write(KEYS.auth, user);
+}
+
+export function loadAuthUser(): AuthUser | null {
+  return read<AuthUser | null>(KEYS.auth, null);
+}
+
+export function clearAuthUser() {
+  write(KEYS.auth, null);
+}
+
+export function saveTargetJobFamily(jobFamily: string | null) {
+  write(KEYS.targetJobFamily, jobFamily);
+}
+
+export function loadTargetJobFamily(): string | null {
+  return read<string | null>(KEYS.targetJobFamily, null);
 }
 
 export function saveNewPlan(profile: Profile, plan: Plan) {

@@ -27,21 +27,21 @@ export default function Home() {
       {/* Hero */}
       <section className="hero-glow mx-auto max-w-6xl px-4 pt-12 pb-16 sm:pt-20 sm:pb-24 grid gap-12 lg:grid-cols-2 lg:items-center">
         <div className="grid gap-6 stagger">
-          <p className="w-max rounded-full bg-gold-tint text-gold-deep text-sm font-bold px-3 py-1">For UMBC Retrievers</p>
+          <p className="w-max rounded-full bg-gold-tint text-gold-deep text-sm font-bold px-3 py-1">Powered by 140k UMBC Alumni Records</p>
           <h1 className="font-display text-4xl sm:text-5xl lg:text-6xl font-bold leading-tight tracking-tight">
             Your career, mapped out one semester at a time.
           </h1>
           <p className="text-lg text-ink-2 max-w-xl">
-            RetrieversPath turns &ldquo;what should I be doing?&rdquo; into a clear plan: the classes, skills, and
-            experiences that get you to the job you want.
+            RetrieversPath turns &ldquo;what should I be doing?&rdquo; into an actionable roadmap: historical placement data,
+            transcript-diffed skill gap analysis, and the exact UMBC courses to get you hired.
           </p>
           <div className="flex flex-wrap items-center gap-3">
             <Link href="/start" className="press bg-gold text-on-gold rounded-full px-6 py-3 font-bold hover:bg-gold-soft">
-              ✨ Build my plan
+              ✨ Explore Career Matches
             </Link>
-            <a href="#how" className="press rounded-full px-6 py-3 font-semibold text-teal hover:bg-teal-tint">
-              See how it works
-            </a>
+            <Link href="/roadmap" className="press rounded-full border border-teal text-teal px-6 py-3 font-semibold hover:bg-teal-tint">
+              ⚡ Live Roadmap &amp; Transcript Diff
+            </Link>
           </div>
         </div>
         <div className="flex justify-center lg:justify-end pop">
